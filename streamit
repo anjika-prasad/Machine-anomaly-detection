@@ -1,0 +1,173 @@
+import numpy as np
+import pandas as pd
+import holoviews as hv
+from holoviews import opts
+hv.extension('bokeh')
+from matplotlib import pyplot as plt
+import seaborn as sns
+import os
+import scipy.stats as stats
+from sklearn.ensemble import IsolationForest
+from sklearn.metrics import f1_score
+import shap
+shap.initjs()
+from tabulate import tabulate
+from IPython.display import HTML, display
+
+# %% [code] {"_kg_hide-output":true,"execution":{"iopub.status.busy":"2025-02-08T08:54:58.469654Z","iopub.execute_input":"2025-02-08T08:54:58.469859Z","iopub.status.idle":"2025-02-08T08:54:58.476915Z","shell.execute_reply.started":"2025-02-08T08:54:58.469836Z","shell.execute_reply":"2025-02-08T08:54:58.475600Z"}}
+for dirname, _, filenames in os.walk('/kaggle/input/nab/realKnownCause/realKnownCause'):
+    for filename in filenames:
+        print(os.path.join(dirname, filename))
+
+# %% [code] {"_kg_hide-output":true,"execution":{"iopub.status.busy":"2025-02-08T08:54:58.478425Z","iopub.execute_input":"2025-02-08T08:54:58.478655Z","iopub.status.idle":"2025-02-08T08:54:58.507086Z","shell.execute_reply.started":"2025-02-08T08:54:58.478633Z","shell.execute_reply":"2025-02-08T08:54:58.506038Z"}}
+df = pd.read_csv("/kaggle/input/nab/realKnownCause/realKnownCause/machine_temperature_system_failure.csv",low_memory=False)
+print(f'machine_temperature_system_failure.csv : {df.shape}')
+df.head(3)
+
+# %% [code] {"execution":{"iopub.status.busy":"2025-02-08T08:54:58.508433Z","iopub.execute_input":"2025-02-08T08:54:58.508721Z","iopub.status.idle":"2025-02-08T08:54:58.513785Z","shell.execute_reply.started":"2025-02-08T08:54:58.508692Z","shell.execute_reply":"2025-02-08T08:54:58.512660Z"}}
+anomaly_points = [
+        ["2013-12-10 06:25:00.000000","2013-12-12 05:35:00.000000"],
+        ["2013-12-15 17:50:00.000000","2013-12-17 17:00:00.000000"],
+        ["2014-01-27 14:20:00.000000","2014-01-29 13:30:00.000000"],
+        ["2014-02-07 14:55:00.000000","2014-02-09 14:05:00.000000"]
+]
+
+# %% [code] {"execution":{"iopub.status.busy":"2025-02-08T08:54:58.515511Z","iopub.execute_input":"2025-02-08T08:54:58.515732Z","iopub.status.idle":"2025-02-08T08:54:58.536494Z","shell.execute_reply.started":"2025-02-08T08:54:58.515711Z","shell.execute_reply":"2025-02-08T08:54:58.535641Z"}}
+df['timestamp'] = pd.to_datetime(df['timestamp'])
+#is anomaly? : True => 1, False => 0
+df['anomaly'] = 0
+for start, end in anomaly_points:
+    df.loc[((df['timestamp'] >= start) & (df['timestamp'] <= end)), 'anomaly'] = 1
+
+# %% [markdown]
+# ## Datetime Information
+
+# %% [code] {"execution":{"iopub.status.busy":"2025-02-08T08:54:58.537639Z","iopub.execute_input":"2025-02-08T08:54:58.537836Z","iopub.status.idle":"2025-02-08T08:54:58.975334Z","shell.execute_reply.started":"2025-02-08T08:54:58.537815Z","shell.execute_reply":"2025-02-08T08:54:58.974666Z"}}
+df['year'] = df['timestamp'].apply(lambda x : x.year)
+df['month'] = df['timestamp'].apply(lambda x : x.month)
+df['day'] = df['timestamp'].apply(lambda x : x.day)
+df['hour'] = df['timestamp'].apply(lambda x : x.hour)
+df['minute'] = df['timestamp'].apply(lambda x : x.minute)
+
+# %% [code] {"_kg_hide-output":true,"execution":{"iopub.status.busy":"2025-02-08T08:54:58.976364Z","iopub.execute_input":"2025-02-08T08:54:58.976559Z","iopub.status.idle":"2025-02-08T08:54:58.988427Z","shell.execute_reply.started":"2025-02-08T08:54:58.976532Z","shell.execute_reply":"2025-02-08T08:54:58.987468Z"}}
+df.index = df['timestamp']
+df.drop(['timestamp'], axis=1, inplace=True)
+df.head(3)
+
+# %% [markdown]
+# ## Basic Analysis
+
+# %% [code] {"_kg_hide-input":true,"execution":{"iopub.status.busy":"2025-02-08T08:54:58.989470Z","iopub.execute_input":"2025-02-08T08:54:58.989743Z","iopub.status.idle":"2025-02-08T08:54:59.207272Z","shell.execute_reply.started":"2025-02-08T08:54:58.989713Z","shell.execute_reply":"2025-02-08T08:54:59.206474Z"}}
+count = hv.Bars(df.groupby(['year','month'])['value'].count()).opts(ylabel="Count", title='Year/Month Count')
+mean = hv.Bars(df.groupby(['year','month']).agg({'value': ['mean']})['value']).opts(ylabel="Temperature", title='Year/Month Mean Temperature')
+(count + mean).opts(opts.Bars(width=380, height=300,tools=['hover'],show_grid=True, stacked=True, legend_position='bottom'))
+
+# %% [code] {"_kg_hide-input":true,"execution":{"iopub.status.busy":"2025-02-08T08:54:59.208273Z","iopub.execute_input":"2025-02-08T08:54:59.208538Z","iopub.status.idle":"2025-02-08T08:54:59.547434Z","shell.execute_reply.started":"2025-02-08T08:54:59.208515Z","shell.execute_reply":"2025-02-08T08:54:59.546668Z"}}
+year_maxmin = df.groupby(['year','month']).agg({'value': ['min', 'max']})
+(hv.Bars(year_maxmin['value']['max']).opts(ylabel="Temperature", title='Year/Month Max Temperature') \
++ hv.Bars(year_maxmin['value']['min']).opts(ylabel="Temperature", title='Year/Month Min Temperature'))\
+    .opts(opts.Bars(width=380, height=300,tools=['hover'],show_grid=True, stacked=True, legend_position='bottom'))
+
+# %% [code] {"_kg_hide-input":true,"execution":{"iopub.status.busy":"2025-02-08T08:54:59.548808Z","iopub.execute_input":"2025-02-08T08:54:59.549146Z","iopub.status.idle":"2025-02-08T08:54:59.658050Z","shell.execute_reply.started":"2025-02-08T08:54:59.549114Z","shell.execute_reply":"2025-02-08T08:54:59.657259Z"}}
+hv.Distribution(df['value']).opts(opts.Distribution(title="Temperature Distribution", xlabel="Temperature", ylabel="Density", width=700, height=300,tools=['hover'],show_grid=True))
+
+# %% [code] {"_kg_hide-input":true,"execution":{"iopub.status.busy":"2025-02-08T08:54:59.660737Z","iopub.execute_input":"2025-02-08T08:54:59.660945Z","iopub.status.idle":"2025-02-08T08:55:00.125590Z","shell.execute_reply.started":"2025-02-08T08:54:59.660924Z","shell.execute_reply":"2025-02-08T08:55:00.124682Z"}}
+((hv.Distribution(df.loc[df['year']==2013,'value'], label='2013') * hv.Distribution(df.loc[df['year']==2014,'value'], label='2014')).opts(title="Temperature by Year Distribution", legend_position='bottom') + \
+(hv.Distribution(df.loc[df['month']==12,'value'], label='12') * hv.Distribution(df.loc[df['month']==1,'value'], label='1') \
+     * hv.Distribution(df.loc[df['month']==2,'value'], label='2')).opts(title="Temperature by Month Distribution", legend_position='bottom')) \
+     .opts(opts.Distribution(xlabel="Temperature", ylabel="Density", width=380, height=300,tools=['hover'],show_grid=True))
+
+# %% [markdown]
+# ## Time Series Analysis
+
+# %% [code] {"_kg_hide-input":true,"execution":{"iopub.status.busy":"2025-02-08T08:55:00.126924Z","iopub.execute_input":"2025-02-08T08:55:00.127237Z","iopub.status.idle":"2025-02-08T08:55:00.291946Z","shell.execute_reply.started":"2025-02-08T08:55:00.127204Z","shell.execute_reply":"2025-02-08T08:55:00.291162Z"}}
+anomalies = [[ind, value] for ind, value in zip(df[df['anomaly']==1].index, df.loc[df['anomaly']==1,'value'])]
+(hv.Curve(df['value'], label="Temperature") * hv.Points(anomalies, label="Anomaly Points").opts(color='red', legend_position='bottom', size=2, title="Temperature & Given Anomaly Points"))\
+    .opts(opts.Curve(xlabel="Time", ylabel="Temperature", width=700, height=400,tools=['hover'],show_grid=True))
+
+# %% [code] {"_kg_hide-input":true,"execution":{"iopub.status.busy":"2025-02-08T08:55:00.292927Z","iopub.execute_input":"2025-02-08T08:55:00.293162Z","iopub.status.idle":"2025-02-08T08:55:00.361646Z","shell.execute_reply.started":"2025-02-08T08:55:00.293139Z","shell.execute_reply":"2025-02-08T08:55:00.360681Z"}}
+hv.Curve(df['value'].resample('D').mean()).opts(opts.Curve(title="Temperature Mean by Day", xlabel="Time", ylabel="Temperature", width=700, height=300,tools=['hover'],show_grid=True))
+
+# %% [markdown]
+# ## Model. Isolation Forest
+# 
+
+# %% [code] {"execution":{"iopub.status.busy":"2025-02-08T08:55:00.362771Z","iopub.execute_input":"2025-02-08T08:55:00.363003Z","iopub.status.idle":"2025-02-08T08:55:03.583047Z","shell.execute_reply.started":"2025-02-08T08:55:00.362978Z","shell.execute_reply":"2025-02-08T08:55:03.582301Z"}}
+iforest_model = IsolationForest(n_estimators=300, contamination=0.1, max_samples=700)
+iforest_ret = iforest_model.fit_predict(df['value'].values.reshape(-1, 1))
+iforest_df = pd.DataFrame()
+iforest_df['value'] = df['value']
+iforest_df['anomaly']  = [1 if i==-1 else 0 for i in iforest_ret]
+
+# %% [code] {"_kg_hide-input":true,"execution":{"iopub.status.busy":"2025-02-08T08:55:03.583970Z","iopub.execute_input":"2025-02-08T08:55:03.584162Z","iopub.status.idle":"2025-02-08T08:55:03.749419Z","shell.execute_reply.started":"2025-02-08T08:55:03.584142Z","shell.execute_reply":"2025-02-08T08:55:03.748227Z"}}
+anomalies = [[ind, value] for ind, value in zip(iforest_df[iforest_df['anomaly']==1].index, iforest_df.loc[iforest_df['anomaly']==1,'value'])]
+(hv.Curve(iforest_df['value'], label="Temperature") * hv.Points(anomalies, label="Detected Points").opts(color='red', legend_position='bottom', size=2, title="Isolation Forest - Detected Points"))\
+    .opts(opts.Curve(xlabel="Time", ylabel="Temperature", width=700, height=400,tools=['hover'],show_grid=True))
+
+# %% [code] {"_kg_hide-input":true,"execution":{"iopub.status.busy":"2025-02-08T08:55:03.750585Z","iopub.execute_input":"2025-02-08T08:55:03.750825Z","iopub.status.idle":"2025-02-08T08:55:08.286468Z","shell.execute_reply.started":"2025-02-08T08:55:03.750800Z","shell.execute_reply":"2025-02-08T08:55:08.285650Z"}}
+sample_train = df['value'].values[np.random.randint(0, len(df['value']), (100))].reshape(-1, 1)
+explainer = shap.TreeExplainer(model=iforest_model, feature_perturbation="interventional", data=sample_train)
+shap_values = explainer.shap_values(X=sample_train)
+shap.summary_plot(shap_values=shap_values, features=sample_train, feature_names=['value'], plot_type="violin")
+
+# %% [code] {"_kg_hide-input":true,"execution":{"iopub.status.busy":"2025-02-08T08:55:08.287496Z","iopub.execute_input":"2025-02-08T08:55:08.287702Z","iopub.status.idle":"2025-02-08T08:55:08.298943Z","shell.execute_reply.started":"2025-02-08T08:55:08.287679Z","shell.execute_reply":"2025-02-08T08:55:08.297870Z"}}
+iforest_f1 = f1_score(df['anomaly'], iforest_df['anomaly'])
+print(f'Isolation Forest F1 Score : {iforest_f1}')
+
+# %% [code] {"execution":{"iopub.status.busy":"2025-02-08T08:55:08.299877Z","iopub.execute_input":"2025-02-08T08:55:08.300062Z","iopub.status.idle":"2025-02-08T08:55:08.413861Z","shell.execute_reply.started":"2025-02-08T08:55:08.300043Z","shell.execute_reply":"2025-02-08T08:55:08.412976Z"}}
+import joblib
+joblib.dump(iforest_model, "model.pkl")
+print("Model saved as model.pkl")
+
+# %% [code] {"execution":{"iopub.status.busy":"2025-02-08T08:55:08.414934Z","iopub.execute_input":"2025-02-08T08:55:08.415160Z","iopub.status.idle":"2025-02-08T08:55:08.421739Z","shell.execute_reply.started":"2025-02-08T08:55:08.415136Z","shell.execute_reply":"2025-02-08T08:55:08.420581Z"}}
+from IPython.display import FileLink
+
+print("Click the link below to download the file:")
+FileLink("model.pkl")
+
+# %% [code] {"execution":{"iopub.status.busy":"2025-02-08T09:10:27.774764Z","iopub.execute_input":"2025-02-08T09:10:27.775013Z","iopub.status.idle":"2025-02-08T09:14:20.979772Z","shell.execute_reply.started":"2025-02-08T09:10:27.774992Z","shell.execute_reply":"2025-02-08T09:14:20.978393Z"}}
+!pip install streamlit --quiet
+%%writefile app.py
+import streamlit as st
+
+st.title("Hello, Streamlit!")
+st.write("This is a simple Streamlit app.")
+
+
+# %% [code] {"execution":{"iopub.status.busy":"2025-02-08T09:06:14.727051Z","iopub.execute_input":"2025-02-08T09:06:14.727323Z","iopub.status.idle":"2025-02-08T09:06:14.744927Z","shell.execute_reply.started":"2025-02-08T09:06:14.727301Z","shell.execute_reply":"2025-02-08T09:06:14.743718Z"}}
+import streamlit as st
+import joblib
+import pandas as pd
+
+model = joblib.load("model.pkl")
+
+st.title("🚀 Machine Anomaly Detection")
+
+st.write("Upload your CSV file to detect anomalies.")
+
+uploaded_file = st.file_uploader("Upload CSV", type=["csv","txt"])
+
+if uploaded_file:
+
+    data = pd.read_csv(uploaded_file)
+    
+    st.write("### Uploaded Data:")
+    st.write(data.head())  # Display first 5 rows
+    
+    # Predict anomalies
+    predictions = model.predict(data)  # Assuming the model takes the full dataframe
+    
+    # Convert output (-1 = Anomaly, 1 = Normal)
+    data["Anomaly"] = ["Anomaly" if p == -1 else "Normal" for p in predictions]
+
+    st.write("### Predictions:")
+    st.write(data)
+    
+    anomaly_count = (predictions == -1).sum()
+    normal_count = (predictions == 1).sum()
+    
+    st.write(f"✅ **Normal Points:** {normal_count}")
+    st.write(f"⚠️ **Anomalies Detected:** {anomaly_count}")
+
+    # Download button
+    st.download_button("Download Predictions", data.to_csv(index=False), "predictions.csv", "text/csv")
